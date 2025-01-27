@@ -1,13 +1,12 @@
 import numpy as np
-from enum import Enum
-
+import pygame
 from .balatro_game import BalatroGame
 
 import gymnasium as gym
 from gymnasium import spaces
 
 class BalatroEnv(gym.Env):
-    metadata = {"render_modes": ["ansi"], "render_fps": 4}
+    metadata = {"render_modes": ["ansi","rgb_array"], "render_fps": 4}
 
     MAX_DECK_SIZE = 52
     MAX_HAND_SIZE = 8
@@ -16,8 +15,10 @@ class BalatroEnv(gym.Env):
     MAX_HANDS = 10
     MAX_DISCARDS = 8
 
-    def __init__(self, render_mode=None):
+    def __init__(self, render_mode=None, size = 5):
         self.action_space = spaces.Discrete(self.MAX_ACTIONS)
+        self.size = size 
+        self.window_size = 512 
 
         self.observation_space = spaces.Dict({
             "deck": spaces.Dict({
@@ -38,15 +39,35 @@ class BalatroEnv(gym.Env):
         self.game = BalatroGame()
 
         self.render_mode = render_mode
+        self.window = None
+        self.clock = None
 
     def step(self, action):
+        """
+        Executes the given action, resolves the game state, and returns the new observation,
+        reward, done status, and additional info.
+        """
+
         if action not in self.valid_actions():
             raise RuntimeError("Environment tried to take an invalid action.")
+        
         self.resolve_action(action)
-         
-        reward = 1 if self.game.state == BalatroGame.State.WIN else 0
+        
+        if self.game.state == BalatroGame.State.WIN:
+            reward = 100000 
+        elif self.game.state == BalatroGame.State.LOSS:
+            reward = -100 
+        else:
+            if action == 0:
+                score = self.game.last_score
+                reward = score * 0.1 
+            else: 
+                reward = 0
+
         done = self.game.state != BalatroGame.State.IN_PROGRESS
+
         return self._get_observation(), reward, done, False, {}
+
 
     def resolve_action(self, action):
         if action == 0:
@@ -60,13 +81,66 @@ class BalatroEnv(gym.Env):
         self.game = BalatroGame()
         return self._get_observation(), {}
 
-    def render(self):
+    def render_ansi(self):
         if self.render_mode == "ansi":
             res = f"Ante: {self.game.ante}, Blind: {self.game.blind_index + 1}/3\n"
             res += f"Score: {self.game.round_score}/{self.game.blinds[self.game.blind_index]}\n\n"
             res += f"Highlighted: {self.game.highlighted_to_string()}\n"
             res += f"Hand: {self.game.hand_to_string()}\n"
             return res
+        
+    def render(self):
+        if self.render_mode == "rgb_array":
+            return self._render_frame()
+        if self.render_mode == "ansi":
+            return self.render_ansi()
+
+    def _render_frame(self):
+        if self.window is None and self.render_mode == "rgb_array":
+            pygame.init()
+            pygame.display.init()
+            self.window = pygame.display.set_mode(
+                (self.window_size, self.window_size)
+            )
+        if self.clock is None and self.render_mode == "rgb_array":
+            self.clock = pygame.time.Clock()
+
+        canvas = pygame.Surface((self.window_size, self.window_size))
+        canvas.fill((255, 255, 255))
+        pix_square_size = (
+            self.window_size / self.size
+        )  
+
+        font = pygame.font.Font(None, 36) 
+        res = [
+            f"Ante: {self.game.ante}, Blind: {self.game.blind_index + 1}/3",
+            f"Score: {self.game.round_score}/{self.game.blinds[self.game.blind_index]}",
+            f"Last Score: {self.game.last_score}",
+            f"Last Score: {self.game.last_played_hand_type}",
+            f"Hands: {self.game.round_hands}",
+            f"Discards: {self.game.round_discards}",
+            "",
+            f"Highlighted: {self.game.highlighted_to_string()}",
+            f"Hand: {self.game.hand_to_string()}",
+        ]
+
+        line_height = font.get_linesize()  
+        y_offset = 10  
+        for line in res:
+            text_surface = font.render(line, True, (0, 0, 0))
+            canvas.blit(text_surface, (10, y_offset))  
+            y_offset += line_height  
+
+        if self.render_mode == "human":
+            self.window.blit(canvas, canvas.get_rect())
+            pygame.event.pump()
+            pygame.display.update()
+            self.clock.tick(self.metadata["render_fps"])
+        else: 
+            return np.transpose(
+                np.array(pygame.surfarray.pixels3d(canvas)), axes=(1, 0, 2)
+            )
+
 
     def _get_observation(self):
 
@@ -79,7 +153,6 @@ class BalatroEnv(gym.Env):
 
         hand = self._normalize_array(self.game.hand_indexes, self.MAX_HAND_SIZE)
         highlighted = self._normalize_array(self.game.highlighted_indexes, 5)
-
         return {
             "deck": {
                 "cards": cards, 
@@ -104,12 +177,13 @@ class BalatroEnv(gym.Env):
 
     def valid_actions(self):
         actions = []
-        if len(self.game.highlighted_indexes) > 0:
+        num_highlight_indexes = len(self.game.highlighted_indexes)
+        if num_highlight_indexes > 0:
             if self.game.round_hands > 0:
                 actions.append(0)
             if self.game.round_discards > 0:
                 actions.append(1)
-        if len(self.game.highlighted_indexes) < 5:
+        if num_highlight_indexes < 5:
             for i in range(len(self.game.hand_indexes)):
                 actions.append(i + 2)
         return actions
